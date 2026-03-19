@@ -35,6 +35,7 @@ use crate::{
     },
     util::{
         common_options::{BinaryDownloadOptions, ProbeOptions},
+        debug_bridge::DebugRttForwarder,
         flash::CliProgressBars,
         logging,
         rtt::{
@@ -475,13 +476,20 @@ pub async fn monitor(
     mode: MonitorMode,
     path: &Path,
     mut rtt_client: Option<CliRttClient>,
+    debug_rtt_forwarder: Option<DebugRttForwarder>,
     options: MonitorOptions,
     print_stack_trace: bool,
     target_output_files: &mut TargetOutputFiles,
     stack_frame_limit: u32,
 ) -> anyhow::Result<()> {
     let monitor = session.monitor(mode, options, async |msg| {
-        print_monitor_event(&mut rtt_client.as_mut(), msg, target_output_files).await;
+        print_monitor_event(
+            &mut rtt_client.as_mut(),
+            debug_rtt_forwarder.as_ref(),
+            msg,
+            target_output_files,
+        )
+        .await;
     });
 
     let result = with_ctrl_c(monitor, async {
@@ -623,7 +631,7 @@ pub async fn test(
 
     let log = async {
         while let Some(event) = receiver.recv().await {
-            print_monitor_event(&mut rtt_client.as_mut(), event, target_output_files).await;
+            print_monitor_event(&mut rtt_client.as_mut(), None, event, target_output_files).await;
         }
         futures_util::future::pending().await
     };
@@ -809,11 +817,14 @@ impl CliRttClient {
                 .push(Channel::new(channel.clone(), decoder));
         }
 
+        // Do not print channel name for "Terminal", since it is used for logging
         // If there are multiple channels, print the channel names.
         if up_channels.len() > 1 {
             let width = up_channels.iter().map(|c| c.len()).max().unwrap();
             for processor in self.channel_processors.iter_mut() {
-                processor.print_channel_name(width);
+                if processor.channel != "Terminal" {
+                    processor.print_channel_name(width);
+                }
             }
         }
     }
@@ -821,6 +832,7 @@ impl CliRttClient {
 
 async fn print_monitor_event(
     rtt_client: &mut Option<impl DerefMut<Target = CliRttClient>>,
+    debug_rtt_forwarder: Option<&DebugRttForwarder>,
     event: MonitorEvent,
     target_output_files: &mut TargetOutputFiles,
 ) {
@@ -830,9 +842,18 @@ async fn print_monitor_event(
                 return;
             };
 
+            // println!("Discovered channels: {:?}", up_channels);
             client.on_channels_discovered(&up_channels);
         }
         MonitorEvent::Rtt(RttEvent::Output { channel, bytes }) => {
+            if let Some(forwarder) = debug_rtt_forwarder
+                && channel == forwarder.rtt_channel()
+            {
+                forwarder.forward_to_socket(&bytes);
+                return;
+            }
+
+            // println!("Output on channel {channel}: {:?}", bytes);
             let Some(client) = rtt_client else {
                 return;
             };

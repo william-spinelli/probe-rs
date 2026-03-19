@@ -27,6 +27,7 @@ use crate::{
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest, reset, reset_and_halt},
             resume::{ResumeAllCoresRequest, resume_all_cores},
             rtt_client::{CreateRttClientRequest, CreateRttClientResponse, create_rtt_client},
+            rtt_write::{WriteRttDownChannelRequest, write_rtt_down_channel},
             stack_trace::{TakeStackTraceRequest, TakeStackTraceResponse, take_stack_trace},
             test::{
                 ListTestsRequest, ListTestsResponse, RunTestRequest, RunTestResponse, list_tests,
@@ -66,6 +67,7 @@ pub mod probe;
 pub mod reset;
 pub mod resume;
 pub mod rtt_client;
+pub mod rtt_write;
 pub mod stack_trace;
 pub mod test;
 
@@ -463,6 +465,7 @@ endpoints! {
 
     | ResumeAllCoresEndpoint    | ResumeAllCoresRequest   | NoResponse              | "resume"           |
     | CreateRttClientEndpoint   | CreateRttClientRequest  | CreateRttClientResponse | "create_rtt"       |
+    | WriteRttDownChannelEndpoint| WriteRttDownChannelRequest| NoResponse            | "rtt/write_down"   |
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
     | FlashEndpoint             | FlashRequest            | NoResponse              | "flash/flash"      |
@@ -532,6 +535,7 @@ postcard_rpc::define_dispatch! {
 
         | ResumeAllCoresEndpoint    | async     | resume_all_cores  |
         | CreateRttClientEndpoint   | async     | create_rtt_client |
+        | WriteRttDownChannelEndpoint| async    | write_rtt_down_channel |
         | TakeStackTraceEndpoint    | async     | take_stack_trace  |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |

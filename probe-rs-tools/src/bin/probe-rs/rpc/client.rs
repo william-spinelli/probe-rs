@@ -39,7 +39,7 @@ use crate::{
             ResumeAllCoresEndpoint, RpcResult, RunTestEndpoint, SelectProbeEndpoint,
             TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TempFileDataEndpoint,
             TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
-            WriteMemory32Endpoint, WriteMemory64Endpoint,
+            WriteMemory32Endpoint, WriteMemory64Endpoint, WriteRttDownChannelEndpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             file::{AppendFileRequest, TempFile},
             flash::{
@@ -56,6 +56,7 @@ use crate::{
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest},
             resume::ResumeAllCoresRequest,
             rtt_client::{CreateRttClientRequest, RttClientData, ScanRegion},
+            rtt_write::WriteRttDownChannelRequest,
             stack_trace::{StackTraces, TakeStackTraceRequest},
             test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
         },
@@ -586,6 +587,22 @@ impl SessionInterface {
                 sessid: self.sessid,
                 scan_regions,
                 config,
+            })
+            .await
+    }
+
+    pub async fn write_rtt_down_channel(
+        &self,
+        rtt_client: Key<RttClient>,
+        channel: u32,
+        data: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<WriteRttDownChannelEndpoint, _>(&WriteRttDownChannelRequest {
+                sessid: self.sessid,
+                rtt_client,
+                channel,
+                data,
             })
             .await
     }

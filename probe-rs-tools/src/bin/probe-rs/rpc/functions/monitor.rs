@@ -185,12 +185,11 @@ fn monitor_impl(
             sender.send_semihosting_event(event).unwrap()
         });
 
-    let mut rtt_client = request
+    let core_id = request
         .options
         .rtt_client
-        .map(|rtt_client| ctx.object_mut_blocking(rtt_client));
-
-    let core_id = rtt_client.as_ref().map(|rtt| rtt.core_id()).unwrap_or(0);
+        .map(|rtt_client| ctx.object_mut_blocking(rtt_client).core_id())
+        .unwrap_or(0);
 
     let mut run_loop = RunLoop {
         core_id,
@@ -202,8 +201,9 @@ fn monitor_impl(
         request.mode.prepare(&mut session, run_loop.core_id)?;
     }
 
-    let poller = rtt_client.as_deref_mut().map(|client| RttPoller {
-        rtt_client: client,
+    let poller = request.options.rtt_client.map(|rtt_client| RttPoller {
+        ctx: ctx.clone(),
+        rtt_client,
         clear_control_block: request.mode.should_clear_rtt_header(),
         sender: |message| {
             sender
@@ -229,39 +229,38 @@ fn monitor_impl(
     }
 }
 
-pub struct RttPoller<'c, S>
+pub struct RttPoller<S>
 where
     S: FnMut(RttEvent) -> anyhow::Result<()>,
-    S: 'c,
 {
-    pub rtt_client: &'c mut RttClient,
+    pub ctx: RpcSpawnContext,
+    pub rtt_client: Key<RttClient>,
     pub clear_control_block: bool,
     pub sender: S,
 }
 
-impl<'c, S> RunLoopPoller for RttPoller<'c, S>
+impl<S> RunLoopPoller for RttPoller<S>
 where
     S: FnMut(RttEvent) -> anyhow::Result<()>,
-    S: 'c,
 {
     fn start(&mut self, core: &mut Core<'_>) -> anyhow::Result<()> {
+        let mut rtt_client = self.ctx.object_mut_blocking(self.rtt_client);
         if self.clear_control_block {
-            self.rtt_client.clear_control_block(core)?;
+            rtt_client.clear_control_block(core)?;
         }
         Ok(())
     }
 
     fn poll(&mut self, core: &mut Core<'_>) -> anyhow::Result<Duration> {
-        if !self.rtt_client.is_attached() && matches!(self.rtt_client.try_attach(core), Ok(true)) {
+        let mut rtt_client = self.ctx.object_mut_blocking(self.rtt_client);
+        if !rtt_client.is_attached() && matches!(rtt_client.try_attach(core), Ok(true)) {
             tracing::debug!("Attached to RTT");
-            let up_channels = self
-                .rtt_client
+            let up_channels = rtt_client
                 .up_channels()
                 .iter()
                 .map(|c| c.channel_name())
                 .collect::<Vec<_>>();
-            let down_channels = self
-                .rtt_client
+            let down_channels = rtt_client
                 .down_channels()
                 .iter()
                 .map(|c| c.channel_name())
@@ -274,8 +273,8 @@ where
         }
 
         let mut next_poll = Duration::from_millis(100);
-        for channel in 0..self.rtt_client.up_channels().len() {
-            let bytes = self.rtt_client.poll_channel(core, channel as u32)?;
+        for channel in 0..rtt_client.up_channels().len() {
+            let bytes = rtt_client.poll_channel(core, channel as u32)?;
             if !bytes.is_empty() {
                 // Poll RTT with a frequency of 10 Hz if we do not receive any new data.
                 // Once we receive new data, we poll continuously while we have anything to read.
@@ -293,7 +292,8 @@ where
     }
 
     fn exit(&mut self, core: &mut Core<'_>) -> anyhow::Result<()> {
-        self.rtt_client.clean_up(core)?;
+        let mut rtt_client = self.ctx.object_mut_blocking(self.rtt_client);
+        rtt_client.clean_up(core)?;
         Ok(())
     }
 }

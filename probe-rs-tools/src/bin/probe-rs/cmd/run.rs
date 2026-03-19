@@ -8,6 +8,7 @@ use crate::rpc::functions::test::{Test, TestDefinition};
 use crate::FormatOptions;
 use crate::util::cli::{self, connect_target_output_files, parse_semihosting_options, rtt_client};
 use crate::util::common_options::{BinaryDownloadOptions, ProbeOptions};
+use crate::util::debug_bridge::start_debug_bridge;
 
 use anyhow::{Context, anyhow};
 use goblin::elf::Elf;
@@ -180,6 +181,11 @@ pub struct SharedOptions {
     #[clap(long)]
     pub(crate) target_output_file: Vec<String>,
 
+    /// Listen on the specified TCP port and forward raw bytes bidirectionally between the
+    /// connected socket and RTT channel 1.
+    #[clap(long)]
+    pub(crate) debug_port: Option<u16>,
+
     /// Scan the memory to find the RTT control block
     #[clap(long)]
     pub(crate) rtt_scan_memory: bool,
@@ -225,69 +231,94 @@ impl Cmd {
 
         let client_handle = rtt_client.handle();
 
+        if self.shared_options.debug_port.is_some() && !matches!(&run_mode, RunMode::Normal) {
+            anyhow::bail!("`--debug-port` is only supported in normal run mode");
+        }
+
+        let mut debug_rtt_forwarder = None;
+        let mut debug_bridge_task = None;
+
         let boot_info = if self.shared_options.no_download {
             BootInfo::Other
         } else {
-        // Flash firmware
+            // Flash firmware
             cli::flash(
-            &session,
-            &self.shared_options.path,
-            self.shared_options.download_options.chip_erase,
-            self.shared_options.format_options,
-            self.shared_options.download_options,
-            Some(&mut rtt_client),
-            None,
-        )
+                &session,
+                &self.shared_options.path,
+                self.shared_options.download_options.chip_erase,
+                self.shared_options.format_options,
+                self.shared_options.download_options,
+                Some(&mut rtt_client),
+                None,
+            )
             .await?
         };
 
+        if let Some(debug_port) = self.shared_options.debug_port {
+            let (forwarder, task) =
+                start_debug_bridge(session.clone(), client_handle, debug_port).await?;
+            debug_rtt_forwarder = Some(forwarder);
+            debug_bridge_task = Some(task);
+        }
+
         // Run firmware based on run mode
-        if let RunMode::Test(elf_info) = run_mode {
-            cli::test(
-                &session,
-                boot_info,
-                elf_info,
-                Arguments {
-                    test_threads: Some(1), // Avoid parallel execution
-                    list: self.test_options.list,
-                    exact: self.test_options.exact,
-                    ignored: self.test_options.ignored,
-                    include_ignored: self.test_options.include_ignored,
-                    format: self.test_options.format,
-                    skip: self.test_options.skip_test.clone(),
-                    filter: if self.test_options.filter.is_empty() {
-                        None
-                    } else {
-                        //TODO: Fix libtest-mimic so that it allows multiple filters (same as std test runners)
-                        Some(self.test_options.filter.join(" "))
+        match run_mode {
+            RunMode::Test(elf_info) => {
+                cli::test(
+                    &session,
+                    boot_info,
+                    elf_info,
+                    Arguments {
+                        test_threads: Some(1), // Avoid parallel execution
+                        list: self.test_options.list,
+                        exact: self.test_options.exact,
+                        ignored: self.test_options.ignored,
+                        include_ignored: self.test_options.include_ignored,
+                        format: self.test_options.format,
+                        skip: self.test_options.skip_test.clone(),
+                        filter: if self.test_options.filter.is_empty() {
+                            None
+                        } else {
+                            //TODO: Fix libtest-mimic so that it allows multiple filters (same as std test runners)
+                            Some(self.test_options.filter.join(" "))
+                        },
+                        ..Arguments::default()
                     },
-                    ..Arguments::default()
-                },
-                self.shared_options.always_print_stacktrace,
-                &self.shared_options.path,
-                Some(rtt_client),
-                &mut target_output_files,
-                semihosting_options,
-                self.shared_options.stack_frame_limit,
-            )
-            .await
-        } else {
-            cli::monitor(
-                &session,
-                MonitorMode::Run(boot_info),
-                &self.shared_options.path,
-                Some(rtt_client),
-                MonitorOptions {
-                    catch_reset: !self.run_options.no_catch_reset,
-                    catch_hardfault: !self.run_options.no_catch_hardfault,
-                    rtt_client: Some(client_handle),
+                    self.shared_options.always_print_stacktrace,
+                    &self.shared_options.path,
+                    Some(rtt_client),
+                    &mut target_output_files,
                     semihosting_options,
-                },
-                self.shared_options.always_print_stacktrace,
-                &mut target_output_files,
-                self.shared_options.stack_frame_limit,
-            )
-            .await
+                    self.shared_options.stack_frame_limit,
+                )
+                .await
+            }
+            RunMode::Normal => {
+                let monitor_result = cli::monitor(
+                    &session,
+                    MonitorMode::Run(boot_info),
+                    &self.shared_options.path,
+                    Some(rtt_client),
+                    debug_rtt_forwarder,
+                    MonitorOptions {
+                        catch_reset: !self.run_options.no_catch_reset,
+                        catch_hardfault: !self.run_options.no_catch_hardfault,
+                        rtt_client: Some(client_handle),
+                        semihosting_options,
+                    },
+                    self.shared_options.always_print_stacktrace,
+                    &mut target_output_files,
+                    self.shared_options.stack_frame_limit,
+                )
+                .await;
+
+                if let Some(task) = debug_bridge_task {
+                    task.abort();
+                    _ = task.await;
+                }
+
+                monitor_result
+            }
         }
     }
 }
