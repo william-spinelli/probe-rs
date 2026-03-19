@@ -183,7 +183,7 @@ pub struct SharedOptions {
 
     /// Listen on the specified TCP port and forward raw bytes bidirectionally between the
     /// connected socket and RTT channel 1.
-    #[clap(long)]
+    #[clap(long, env = "UNO_EMBEDDED_DEBUG_PORT")]
     pub(crate) debug_port: Option<u16>,
 
     /// Scan the memory to find the RTT control block
