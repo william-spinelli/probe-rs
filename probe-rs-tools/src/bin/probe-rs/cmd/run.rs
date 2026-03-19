@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::rpc::client::RpcClient;
+use crate::rpc::functions::flash::BootInfo;
 use crate::rpc::functions::monitor::{MonitorMode, MonitorOptions};
 use crate::rpc::functions::test::{Test, TestDefinition};
 
@@ -132,6 +133,10 @@ pub struct SharedOptions {
     #[clap(flatten)]
     pub(crate) download_options: BinaryDownloadOptions,
 
+    /// Skip downloading the ELF before running.
+    #[clap(long)]
+    pub(crate) no_download: bool,
+
     /// The path to the ELF file to flash and run.
     #[clap(
         index = 1,
@@ -220,8 +225,11 @@ impl Cmd {
 
         let client_handle = rtt_client.handle();
 
+        let boot_info = if self.shared_options.no_download {
+            BootInfo::Other
+        } else {
         // Flash firmware
-        let boot_info = cli::flash(
+            cli::flash(
             &session,
             &self.shared_options.path,
             self.shared_options.download_options.chip_erase,
@@ -230,7 +238,8 @@ impl Cmd {
             Some(&mut rtt_client),
             None,
         )
-        .await?;
+            .await?
+        };
 
         // Run firmware based on run mode
         if let RunMode::Test(elf_info) = run_mode {
