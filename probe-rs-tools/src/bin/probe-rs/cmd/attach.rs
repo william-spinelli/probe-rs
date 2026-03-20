@@ -43,6 +43,7 @@ impl Cmd {
             MonitorMode::AttachToRunning,
             &self.run.shared_options.path,
             Some(rtt_client),
+            None,
             MonitorOptions {
                 catch_reset: !self.run.run_options.no_catch_reset,
                 catch_hardfault: !self.run.run_options.no_catch_hardfault,

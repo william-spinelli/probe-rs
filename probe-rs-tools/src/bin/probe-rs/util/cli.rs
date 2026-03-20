@@ -36,6 +36,7 @@ use crate::{
     util::{
         common_options::{BinaryDownloadOptions, ProbeOptions},
         flash::CliProgressBars,
+        flow_debug::FlowDebugBridge,
         logging,
         rtt::{
             self, DefmtProcessor, DefmtState, RttDataHandler, RttDecoder, RttSymbolError,
@@ -475,13 +476,20 @@ pub async fn monitor(
     mode: MonitorMode,
     path: &Path,
     mut rtt_client: Option<CliRttClient>,
+    flow_debug_bridge: Option<&FlowDebugBridge>,
     options: MonitorOptions,
     print_stack_trace: bool,
     target_output_files: &mut TargetOutputFiles,
     stack_frame_limit: u32,
 ) -> anyhow::Result<()> {
     let monitor = session.monitor(mode, options, async |msg| {
-        print_monitor_event(&mut rtt_client.as_mut(), msg, target_output_files).await;
+        print_monitor_event(
+            &mut rtt_client.as_mut(),
+            flow_debug_bridge,
+            msg,
+            target_output_files,
+        )
+        .await;
     });
 
     let result = with_ctrl_c(monitor, async {
@@ -623,7 +631,7 @@ pub async fn test(
 
     let log = async {
         while let Some(event) = receiver.recv().await {
-            print_monitor_event(&mut rtt_client.as_mut(), event, target_output_files).await;
+            print_monitor_event(&mut rtt_client.as_mut(), None, event, target_output_files).await;
         }
         futures_util::future::pending().await
     };
@@ -821,6 +829,7 @@ impl CliRttClient {
 
 async fn print_monitor_event(
     rtt_client: &mut Option<impl DerefMut<Target = CliRttClient>>,
+    flow_debug_bridge: Option<&FlowDebugBridge>,
     event: MonitorEvent,
     target_output_files: &mut TargetOutputFiles,
 ) {
@@ -833,6 +842,13 @@ async fn print_monitor_event(
             client.on_channels_discovered(&up_channels);
         }
         MonitorEvent::Rtt(RttEvent::Output { channel, bytes }) => {
+            if let Some(bridge) = flow_debug_bridge
+                && channel == bridge.rtt_channel_from_target()
+            {
+                bridge.forward_to_client(&bytes);
+                return;
+            }
+
             let Some(client) = rtt_client else {
                 return;
             };
@@ -885,8 +901,9 @@ impl Channel {
         }
     }
 
-    fn print_channel_name(&mut self, width: usize) {
-        self.printer_prefix = format!("[{:width$}] ", self.channel, width = width);
+    fn print_channel_name(&mut self, _width: usize) {
+        // Skip channel names printing
+        // self.printer_prefix = format!("[{:width$}] ", self.channel, width = width);
     }
 
     async fn process(&mut self, bytes: &[u8], copy_to: Option<&mut tokio::fs::File>) {

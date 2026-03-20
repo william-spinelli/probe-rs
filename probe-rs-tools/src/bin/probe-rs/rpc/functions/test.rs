@@ -157,6 +157,7 @@ fn list_tests_impl(
 
     let poller = rtt_client.as_deref_mut().map(|client| RttPoller {
         rtt_client: client,
+        write_requests: None,
         clear_control_block: true,
         sender: |message| {
             sender
@@ -252,6 +253,7 @@ fn run_test_impl(
 
     let poller = rtt_client.as_deref_mut().map(|client| RttPoller {
         rtt_client: client,
+        write_requests: None,
         clear_control_block: true,
         sender: |message| {
             sender

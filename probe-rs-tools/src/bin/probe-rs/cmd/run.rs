@@ -8,6 +8,7 @@ use crate::rpc::functions::test::{Test, TestDefinition};
 use crate::FormatOptions;
 use crate::util::cli::{self, connect_target_output_files, parse_semihosting_options, rtt_client};
 use crate::util::common_options::{BinaryDownloadOptions, ProbeOptions};
+use crate::util::flow_debug::FlowDebugBridge;
 
 use anyhow::{Context, anyhow};
 use goblin::elf::Elf;
@@ -180,6 +181,11 @@ pub struct SharedOptions {
     #[clap(long)]
     pub(crate) target_output_file: Vec<String>,
 
+    /// Listen on the specified TCP port and forward raw bytes bidirectionally between the
+    /// connected socket and RTT channel 1.
+    #[clap(long, env = "UNO_EMBEDDED_DEBUG_PORT")]
+    pub(crate) debug_port: Option<u16>,
+
     /// Scan the memory to find the RTT control block
     #[clap(long)]
     pub(crate) rtt_scan_memory: bool,
@@ -225,20 +231,31 @@ impl Cmd {
 
         let client_handle = rtt_client.handle();
 
+        if self.shared_options.debug_port.is_some() && !matches!(&run_mode, RunMode::Normal) {
+            anyhow::bail!("`--debug-port` is only supported in normal run mode");
+        }
+
         let boot_info = if self.shared_options.no_download {
             BootInfo::Other
         } else {
-        // Flash firmware
+            // Flash firmware
             cli::flash(
-            &session,
-            &self.shared_options.path,
-            self.shared_options.download_options.chip_erase,
-            self.shared_options.format_options,
-            self.shared_options.download_options,
-            Some(&mut rtt_client),
-            None,
-        )
+                &session,
+                &self.shared_options.path,
+                self.shared_options.download_options.chip_erase,
+                self.shared_options.format_options,
+                self.shared_options.download_options,
+                Some(&mut rtt_client),
+                None,
+            )
             .await?
+        };
+
+        let flow_debug_bridge = match self.shared_options.debug_port {
+            Some(debug_port) => {
+                Some(FlowDebugBridge::new(session.clone(), client_handle, debug_port).await?)
+            }
+            None => None,
         };
 
         // Run firmware based on run mode
@@ -272,11 +289,12 @@ impl Cmd {
             )
             .await
         } else {
-            cli::monitor(
+            let monitor_result = cli::monitor(
                 &session,
                 MonitorMode::Run(boot_info),
                 &self.shared_options.path,
                 Some(rtt_client),
+                flow_debug_bridge.as_ref(),
                 MonitorOptions {
                     catch_reset: !self.run_options.no_catch_reset,
                     catch_hardfault: !self.run_options.no_catch_hardfault,
@@ -287,7 +305,13 @@ impl Cmd {
                 &mut target_output_files,
                 self.shared_options.stack_frame_limit,
             )
-            .await
+            .await;
+
+            if let Some(bridge) = flow_debug_bridge {
+                bridge.shutdown();
+            }
+
+            monitor_result
         }
     }
 }

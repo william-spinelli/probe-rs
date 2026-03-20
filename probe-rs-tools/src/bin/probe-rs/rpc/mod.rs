@@ -16,7 +16,7 @@ use postcard_schema::{
 };
 use probe_rs::{Session, config::Registry};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 pub mod client;
@@ -93,6 +93,12 @@ impl<T> Key<T> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct RttBridgeWrite {
+    pub channel: u32,
+    pub data: Vec<u8>,
+}
+
 struct ObjectStorage {
     storage: HashMap<u64, Arc<Mutex<dyn Any + Send>>>,
 }
@@ -139,6 +145,7 @@ pub struct ConnectionState {
     dry_run_sessions: HashSet<Key<Session>>,
     /// Generic object storage.
     object_storage: Arc<Mutex<ObjectStorage>>,
+    rtt_bridge_down_route: Arc<Mutex<Option<mpsc::UnboundedSender<RttBridgeWrite>>>>,
     registry: Arc<Mutex<Registry>>,
     token: CancellationToken,
 }
@@ -148,6 +155,7 @@ impl ConnectionState {
         Self {
             dry_run_sessions: HashSet::new(),
             object_storage: Arc::new(Mutex::new(ObjectStorage::new())),
+            rtt_bridge_down_route: Arc::new(Mutex::new(None)),
             registry: Arc::new(Mutex::new(Registry::from_builtin_families())),
             token: CancellationToken::new(),
         }
@@ -169,6 +177,26 @@ impl ConnectionState {
         key: Key<T>,
     ) -> impl DerefMut<Target = T> + Send + use<T> {
         self.object_storage.blocking_lock().object_mut_blocking(key)
+    }
+
+    pub fn register_rtt_bridge_down_route(&self, sender: mpsc::UnboundedSender<RttBridgeWrite>) {
+        *self.rtt_bridge_down_route.blocking_lock() = Some(sender);
+    }
+
+    pub fn unregister_rtt_bridge_down_route(&self) {
+        self.rtt_bridge_down_route.blocking_lock().take();
+    }
+
+    pub async fn send_to_rtt_bridge(
+        &self,
+        message: &RttBridgeWrite,
+    ) -> Result<bool, mpsc::error::SendError<RttBridgeWrite>> {
+        let sender = self.rtt_bridge_down_route.lock().await.clone();
+        let Some(sender) = sender else {
+            return Ok(false);
+        };
+        sender.send(message.clone())?;
+        Ok(true)
     }
 
     pub async fn set_session(&mut self, session: Session, dry_run: bool) -> Key<Session> {

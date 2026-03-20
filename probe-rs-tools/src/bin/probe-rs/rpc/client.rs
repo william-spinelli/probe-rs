@@ -36,10 +36,10 @@ use crate::{
             ListProbesEndpoint, ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint,
             ProgressEventTopic, ReadMemory8Endpoint, ReadMemory16Endpoint, ReadMemory32Endpoint,
             ReadMemory64Endpoint, ResetCoreAndHaltEndpoint, ResetCoreEndpoint,
-            ResumeAllCoresEndpoint, RpcResult, RunTestEndpoint, SelectProbeEndpoint,
-            TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TempFileDataEndpoint,
-            TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
-            WriteMemory32Endpoint, WriteMemory64Endpoint,
+            ResumeAllCoresEndpoint, RpcResult, RttBridgeWriteEndpoint, RunTestEndpoint,
+            SelectProbeEndpoint, TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint,
+            TempFileDataEndpoint, TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint,
+            WriteMemory16Endpoint, WriteMemory32Endpoint, WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             file::{AppendFileRequest, TempFile},
             flash::{
@@ -55,6 +55,7 @@ use crate::{
             },
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest},
             resume::ResumeAllCoresRequest,
+            rtt_bridge::RttBridgeWriteRequest,
             rtt_client::{CreateRttClientRequest, RttClientData, ScanRegion},
             stack_trace::{StackTraces, TakeStackTraceRequest},
             test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
@@ -586,6 +587,22 @@ impl SessionInterface {
                 sessid: self.sessid,
                 scan_regions,
                 config,
+            })
+            .await
+    }
+
+    pub async fn rtt_bridge_write(
+        &self,
+        rtt_client: Key<RttClient>,
+        channel: u32,
+        data: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<RttBridgeWriteEndpoint, _>(&RttBridgeWriteRequest {
+                sessid: self.sessid,
+                rtt_client,
+                channel,
+                data,
             })
             .await
     }

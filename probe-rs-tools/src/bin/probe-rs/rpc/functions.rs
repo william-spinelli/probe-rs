@@ -7,7 +7,7 @@ use crate::rpc::functions::file::{
 };
 use crate::{
     rpc::{
-        ConnectionState, Key,
+        ConnectionState, Key, RttBridgeWrite,
         functions::{
             chip::{
                 ChipInfoRequest, ChipInfoResponse, ListFamiliesResponse, LoadChipFamilyRequest,
@@ -26,6 +26,7 @@ use crate::{
             },
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest, reset, reset_and_halt},
             resume::{ResumeAllCoresRequest, resume_all_cores},
+            rtt_bridge::{RttBridgeWriteRequest, rtt_bridge_write},
             rtt_client::{CreateRttClientRequest, CreateRttClientResponse, create_rtt_client},
             stack_trace::{TakeStackTraceRequest, TakeStackTraceResponse, take_stack_trace},
             test::{
@@ -53,7 +54,7 @@ use probe_rs::probe::{
 };
 use probe_rs::{Session, probe::list::Lister};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::sync::mpsc::{self, Receiver, Sender, channel};
 use tokio_util::sync::CancellationToken;
 
 pub mod chip;
@@ -65,6 +66,7 @@ pub mod monitor;
 pub mod probe;
 pub mod reset;
 pub mod resume;
+pub mod rtt_bridge;
 pub mod rtt_client;
 pub mod stack_trace;
 pub mod test;
@@ -232,6 +234,14 @@ impl RpcSpawnContext {
         self.state.token.clone()
     }
 
+    pub fn register_rtt_write_route(&self, sender: mpsc::UnboundedSender<RttBridgeWrite>) {
+        self.state.register_rtt_bridge_down_route(sender);
+    }
+
+    pub fn unregister_rtt_write_route(&self) {
+        self.state.unregister_rtt_bridge_down_route();
+    }
+
     pub async fn run_blocking<T, F, REQ, RESP>(&mut self, request: REQ, task: F) -> RESP
     where
         T: MultiTopicWriter,
@@ -375,6 +385,13 @@ impl RpcContext {
         self.state.store_object(obj).await
     }
 
+    pub async fn rtt_bridge_write(
+        &self,
+        message: &RttBridgeWrite,
+    ) -> Result<bool, mpsc::error::SendError<RttBridgeWrite>> {
+        self.state.send_to_rtt_bridge(message).await
+    }
+
     pub async fn set_session(&mut self, session: Session, dry_run: bool) -> Key<Session> {
         self.state.set_session(session, dry_run).await
     }
@@ -470,6 +487,8 @@ endpoints! {
     | VerifyEndpoint            | VerifyRequest           | VerifyResponse          | "flash/verify"     |
     | MonitorEndpoint           | MonitorRequest          | MonitorResponse         | "monitor"          |
 
+    | RttBridgeWriteEndpoint    | RttBridgeWriteRequest   | NoResponse              | "rtt/write_down"   |
+
     | ListTestsEndpoint         | ListTestsRequest        | ListTestsResponse       | "tests/list"       |
     | RunTestEndpoint           | RunTestRequest          | RunTestResponse         | "tests/run"        |
 
@@ -532,6 +551,7 @@ postcard_rpc::define_dispatch! {
 
         | ResumeAllCoresEndpoint    | async     | resume_all_cores  |
         | CreateRttClientEndpoint   | async     | create_rtt_client |
+        | RttBridgeWriteEndpoint    | async     | rtt_bridge_write  |
         | TakeStackTraceEndpoint    | async     | take_stack_trace  |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |

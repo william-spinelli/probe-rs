@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     rpc::{
-        Key,
+        Key, RttBridgeWrite,
         functions::{
             MonitorEndpoint, MultiTopicPublisher, MultiTopicWriter, RpcResult, RpcSpawnContext,
             RttTopic, SemihostingTopic, WireTxImpl, flash::BootInfo,
@@ -19,7 +19,10 @@ use postcard_rpc::{header::VarHeader, server::Sender};
 use postcard_schema::Schema;
 use probe_rs::{BreakpointCause, Core, HaltReason, Session, semihosting::SemihostingCommand};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{self, error::SendError};
+use tokio::sync::mpsc::{
+    self, UnboundedReceiver,
+    error::{SendError, TryRecvError},
+};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -202,8 +205,21 @@ fn monitor_impl(
         request.mode.prepare(&mut session, run_loop.core_id)?;
     }
 
+    let (route_guard, write_requests) = if request.options.rtt_client.is_some() {
+        let (write_sender, write_receiver) = mpsc::unbounded_channel();
+        ctx.register_rtt_write_route(write_sender);
+        (
+            Some(RttWriteRouteGuard { ctx: ctx.clone() }),
+            Some(write_receiver),
+        )
+    } else {
+        (None, None)
+    };
+    let _route_guard = route_guard;
+
     let poller = rtt_client.as_deref_mut().map(|client| RttPoller {
         rtt_client: client,
+        write_requests,
         clear_control_block: request.mode.should_clear_rtt_header(),
         sender: |message| {
             sender
@@ -229,12 +245,23 @@ fn monitor_impl(
     }
 }
 
+struct RttWriteRouteGuard {
+    ctx: RpcSpawnContext,
+}
+
+impl Drop for RttWriteRouteGuard {
+    fn drop(&mut self) {
+        self.ctx.unregister_rtt_write_route();
+    }
+}
+
 pub struct RttPoller<'c, S>
 where
     S: FnMut(RttEvent) -> anyhow::Result<()>,
     S: 'c,
 {
     pub rtt_client: &'c mut RttClient,
+    pub write_requests: Option<UnboundedReceiver<RttBridgeWrite>>,
     pub clear_control_block: bool,
     pub sender: S,
 }
@@ -252,6 +279,26 @@ where
     }
 
     fn poll(&mut self, core: &mut Core<'_>) -> anyhow::Result<Duration> {
+        let mut write_queue_disconnected = false;
+        if let Some(write_requests) = self.write_requests.as_mut() {
+            loop {
+                match write_requests.try_recv() {
+                    Ok(write) => {
+                        self.rtt_client
+                            .write_down_channel(core, write.channel, &write.data)?;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        write_queue_disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if write_queue_disconnected {
+            self.write_requests = None;
+        }
+
         if !self.rtt_client.is_attached() && matches!(self.rtt_client.try_attach(core), Ok(true)) {
             tracing::debug!("Attached to RTT");
             let up_channels = self

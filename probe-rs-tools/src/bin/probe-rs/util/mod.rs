@@ -2,6 +2,7 @@ pub mod cargo;
 pub mod cli;
 pub mod common_options;
 pub mod flash;
+pub mod flow_debug;
 pub mod logging;
 pub mod meta;
 pub mod rtt;
